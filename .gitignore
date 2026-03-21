@@ -1,0 +1,34 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific outputs & intermediate logs
+dify_processed_output/
+dify_intermediate/
+processor_execution.log
+
+# Ignore data files to avoid committing massive binaries or sensitive docs
+*.pdf
+*.doc
+*.docx
+*.csv
+*.xlsx
+
+# Sensitive Configuration (API Keys)
+# config.py
+# secret.py
