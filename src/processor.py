@@ -10,7 +10,7 @@ from tqdm import tqdm
 from .document_parser import extract_text_with_pages
 from .markdown_parser import parse_markdown_outline, get_leaf_nodes
 from .llm_client import call_llm
-from .prompts import STEP1_SYSTEM_PROMPT, STEP2_SYSTEM_PROMPT, STEP3_SYSTEM_PROMPT, STEP4_SYSTEM_PROMPT
+from .prompts import STEP1_SYSTEM_PROMPT, STEP2_SYSTEM_PROMPT, STEP3_SYSTEM_PROMPT, STEP4_SYSTEM_PROMPT, TOC_EXTRACT_SYSTEM_PROMPT, STEP1_WITH_TOC_SYSTEM_PROMPT
 
 # 导入外部健壮性配置
 import config
@@ -59,6 +59,53 @@ class DifyPreProcessor:
                 f.write("时间戳,MD5前8位,原始文件名\n")
             f.write(f"{self.timestamp_str},{self.md5_str},{filename}\n")
 
+    def _extract_global_toc(self, pages: List[Dict]) -> str:
+        self.logger.info("[*] [步骤 0] 启动全局物理目录提取与规整阶段...")
+        current_pages_to_check = 10
+        max_pages_limit = 50
+        
+        while current_pages_to_check <= min(len(pages) + 9, max_pages_limit):
+            end_idx = min(len(pages), current_pages_to_check)
+            chunk_text = "\n".join([f"【第{p['page_num']}页】\n{p['text']}" for p in pages[:end_idx]])
+            
+            prompt = f"请分析以下这 {end_idx} 页的开篇文本内容：\n\n{chunk_text}"
+            
+            res = None
+            for attempt in range(MAX_RETRIES):
+                res = call_llm(TOC_EXTRACT_SYSTEM_PROMPT, prompt, temperature=0.1)
+                if res:
+                    break
+                else:
+                    self.logger.warning(f"    [!] 网络/响应为空，调度重试 {attempt+1}/{MAX_RETRIES}...")
+            
+            if not res:
+                self.logger.error("    [x] 目录探测完全失败，回退无目录降级模式。")
+                return ""
+                
+            res_stripped = res.strip()
+            
+            if "[NO_TOC]" in res_stripped:
+                self.logger.info("    [v] 该文档并未包含可用的物理原生目录，开启自主解析切片模式。")
+                return ""
+                
+            if "[TOC_INCOMPLETE]" in res_stripped:
+                self.logger.info(f"    [!] 模型侦测到第 {end_idx} 页时目录仍在继续！动态扩大视野范围...")
+                if end_idx == len(pages):
+                     self.logger.warning("    [!] 已经到达文档末尾目录仍未结束，强制将其截断采纳！")
+                     return ""
+                current_pages_to_check += 10
+                continue
+                
+            self.logger.info(f"    [v] 在前 {end_idx} 页内成功抓取到全书原生目录树！正在装载为全局真理基座。")
+            
+            inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step0_Global_TOC.md")
+            with open(inter_file, "w", encoding="utf-8") as f:
+                f.write(res_stripped)
+            return res_stripped
+            
+        self.logger.warning(f"    [!] 目录查找深度超过最大限制 {max_pages_limit} 页，强制终止，直接降级。")
+        return ""
+
     def run(self):
         self.logger.info(f"========== 解析任务启动 ==========")
         self.logger.info(f"[*] 侦测目标文档: {self.file_path}")
@@ -72,6 +119,8 @@ class DifyPreProcessor:
         except Exception as e:
             self.logger.error(f"[x] 文档解析直接发生错误: {e}", exc_info=True)
             return
+
+        global_toc_md = self._extract_global_toc(pages)
 
         self.logger.info("[*] [步骤 1] 正在发起全局 Markdown 抽取的 Map 线程池...")
         
@@ -90,19 +139,22 @@ class DifyPreProcessor:
             chunk_text = "\n".join([f"【第{p['page_num']}页】\n{p['text']}" for p in chunk_pages])
             pbar_s1.set_description(f"范围页码: {i+1}-{actual_end}")
             
-            chunk_prompt = f"以下是一份大卷白皮书的局部第 {i+1} 至 {actual_end} 页碎片片段。请严格抽取这当中的 Markdown 大纲结构(含页码及深度摘要)。\n"
-            
-            if previous_last_node_context:
-                chunk_prompt += f"\n【重要前置上下文】\n上一段落最后所处的对应大纲节点为 `{previous_last_node_context['path']}`，其内容摘要为 `{previous_last_node_context['summary']}`。\n"
-                chunk_prompt += "如果本段页码的内容是该层级的延续且没有出现更高层级/同层级的新标题，请默认将其归属于该层级下继续延伸，并保持你生成的 `#` 标题层级深度的相对正确。\n"
-                chunk_prompt += "【内容重合提示】为了保持上下文连贯，本分块可能包含前一段落末尾（一页左右）的重叠内容。如果遇到与前序摘要描述相同的重复段落，请结合上下文顺延，不要将其当作全新的章节重启。\n"
-            
-            chunk_prompt += f"\n【文本内容如下】:\n{chunk_text}"
+            if global_toc_md:
+                chunk_sys_prompt = STEP1_WITH_TOC_SYSTEM_PROMPT
+                chunk_prompt = f"【全局标准实体目录】:\n{global_toc_md}\n\n【当前需要解析的局部片段（第 {i+1} 至 {actual_end} 页）】:\n{chunk_text}"
+            else:
+                chunk_sys_prompt = STEP1_SYSTEM_PROMPT
+                chunk_prompt = f"以下是一份大卷白皮书的局部第 {i+1} 至 {actual_end} 页碎片片段。请严格抽取这当中的 Markdown 大纲结构(含页码及深度摘要)。\n"
+                if previous_last_node_context:
+                    chunk_prompt += f"\n【重要前置上下文】\n上一段落最后所处的对应大纲节点为 `{previous_last_node_context['path']}`，其内容摘要为 `{previous_last_node_context['summary']}`。\n"
+                    chunk_prompt += "如果本段页码的内容是该层级的延续且没有出现更高层级/同层级的新标题，请默认将其归属于该层级下继续延伸，并保持你生成的 `#` 标题层级深度的相对正确。\n"
+                    chunk_prompt += "【内容重合提示】为了保持上下文连贯，本分块可能包含前一段落末尾（一页左右）的重叠内容。如果遇到与前序摘要描述相同的重复段落，请结合上下文顺延，不要将其当作全新的章节重启。\n"
+                chunk_prompt += f"\n【文本内容如下】:\n{chunk_text}"
             
             # --- 重载失败恢复重试与存盘机制 (Step 1) ---
             chunk_success = False
             for attempt in range(MAX_RETRIES):
-                chunk_md = call_llm(STEP1_SYSTEM_PROMPT, chunk_prompt, temperature=0.2)
+                chunk_md = call_llm(chunk_sys_prompt, chunk_prompt, temperature=0.2)
                 if chunk_md:
                     # 动态提取当前这块最后的大纲路径作为下一次的上下文
                     try:
