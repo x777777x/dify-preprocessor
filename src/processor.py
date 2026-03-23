@@ -64,7 +64,7 @@ class DifyPreProcessor:
         current_pages_to_check = 10
         max_pages_limit = 50
         
-        while current_pages_to_check <= min(len(pages) + 9, max_pages_limit):
+        while current_pages_to_check <= max_pages_limit:
             end_idx = min(len(pages), current_pages_to_check)
             chunk_text = "\n".join([f"【第{p['page_num']}页】\n{p['text']}" for p in pages[:end_idx]])
             
@@ -89,14 +89,19 @@ class DifyPreProcessor:
                 return ""
                 
             if "[TOC_INCOMPLETE]" in res_stripped:
-                self.logger.info(f"    [!] 模型侦测到第 {end_idx} 页时目录仍在继续！动态扩大视野范围...")
-                if end_idx == len(pages):
-                     self.logger.warning("    [!] 已经到达文档末尾目录仍未结束，强制将其截断采纳！")
+                # 【方法二：页码判断法兜底】
+                # 1. 如果材料的总物理页数本身就小于等于当前提取的窗口范围（比如只有8页材料，拿首轮10页），
+                #    则无需也没有后续内容可取，直接弃置探测跳出死循环。
+                if len(pages) <= current_pages_to_check:
+                     self.logger.warning("    [!] 材料实际总页数已耗尽，正文未能被确认开始，强制放弃延伸直接降级模式！")
                      return ""
+                
+                # 2. 如果材料总页数大于当前探测窗口页数，则第二次发送1-20页（稳步扩大10页），以此类推。
+                self.logger.info(f"    [!] 【方法一：内容判断法】识别为正文未开始（目录尚未结束）！发送 1-{current_pages_to_check + 10} 页动态扩大视野...")
                 current_pages_to_check += 10
                 continue
                 
-            self.logger.info(f"    [v] 在前 {end_idx} 页内成功抓取到全书原生目录树！正在装载为全局真理基座。")
+            self.logger.info(f"    [v] 在前 {end_idx} 页内成功抓取到全书原生目录树！并且正文已确认开始！正在装载为全局真理基座。")
             
             inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step0_Global_TOC.md")
             with open(inter_file, "w", encoding="utf-8") as f:
