@@ -76,23 +76,49 @@ class DifyPreProcessor:
         self.logger.info("[*] [步骤 1] 正在发起全局 Markdown 抽取的 Map 线程池...")
         
         chunk_size = 5
+        step_size = 4  # 滑动窗口每次前进一步保留一页重合（1-5，5-9）
         outline_md_parts = []
+        previous_last_node_context = None
         
-        pbar_s1 = tqdm(range(0, len(pages), chunk_size), desc="分块大纲提取管道", unit="区块", dynamic_ncols=True)
+        pbar_s1 = tqdm(range(0, len(pages), step_size), desc="分块大纲提取管道", unit="区块", dynamic_ncols=True)
         for i in pbar_s1:
             chunk_pages = pages[i : i + chunk_size]
+            if not chunk_pages:
+                break
+                
+            actual_end = min(i + chunk_size, len(pages))
             chunk_text = "\n".join([f"【第{p['page_num']}页】\n{p['text']}" for p in chunk_pages])
-            pbar_s1.set_description(f"范围页码: {i+1}-{min(i+chunk_size, len(pages))}")
+            pbar_s1.set_description(f"范围页码: {i+1}-{actual_end}")
             
-            chunk_prompt = f"以下是一份大卷白皮书的局部第 {i+1} 至 {min(i+chunk_size, len(pages))} 页碎片片段。请严格抽取这当中的 Markdown 大纲结构(含页码及深度摘要)：\n\n{chunk_text}"
+            chunk_prompt = f"以下是一份大卷白皮书的局部第 {i+1} 至 {actual_end} 页碎片片段。请严格抽取这当中的 Markdown 大纲结构(含页码及深度摘要)。\n"
+            
+            if previous_last_node_context:
+                chunk_prompt += f"\n【重要前置上下文】\n上一段落最后所处的对应大纲节点为 `{previous_last_node_context['path']}`，其内容摘要为 `{previous_last_node_context['summary']}`。\n"
+                chunk_prompt += "如果本段页码的内容是该层级的延续且没有出现更高层级/同层级的新标题，请默认将其归属于该层级下继续延伸，并保持你生成的 `#` 标题层级深度的相对正确。\n"
+                chunk_prompt += "【内容重合提示】为了保持上下文连贯，本分块可能包含前一段落末尾（一页左右）的重叠内容。如果遇到与前序摘要描述相同的重复段落，请结合上下文顺延，不要将其当作全新的章节重启。\n"
+            
+            chunk_prompt += f"\n【文本内容如下】:\n{chunk_text}"
             
             # --- 重载失败恢复重试与存盘机制 (Step 1) ---
             chunk_success = False
             for attempt in range(MAX_RETRIES):
                 chunk_md = call_llm(STEP1_SYSTEM_PROMPT, chunk_prompt, temperature=0.2)
                 if chunk_md:
+                    # 动态提取当前这块最后的大纲路径作为下一次的上下文
+                    try:
+                        parsed_nodes = parse_markdown_outline(chunk_md)
+                        leafs = get_leaf_nodes(parsed_nodes)
+                        if leafs:
+                            last_leaf = leafs[-1]
+                            previous_last_node_context = {
+                                "path": last_leaf.path,
+                                "summary": last_leaf.summary
+                            }
+                    except Exception as e:
+                        self.logger.warning(f"    [!] 中间层级树解析获取 last_node 失败: {e}")
+
                     # 并发性结果保存为本地单独文件
-                    inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step1_batch_{i}_to_{min(i+chunk_size, len(pages))}.md")
+                    inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step1_batch_{i+1}_to_{actual_end}.md")
                     with open(inter_file, "w", encoding="utf-8") as f:
                         f.write(chunk_md)
                         
@@ -135,7 +161,20 @@ class DifyPreProcessor:
             self.logger.info(f"\n-----------------------------------------------------------")
             self.logger.info(f"[*] 提取第 {i+1}/{len(leaf_nodes)} 支点上下文 | AST系统绝对路径: [{node.path}]")
             
-            original_content = "\n".join([p['text'] for p in pages if str(p['page_num']) == node.page_num])
+            # 为了更好的第二步增强效果以及防止跨页断层，将原先提取单页的逻辑扩展为“提取目标页及前后各一页的内容”作为上下文。
+            target_idx = -1
+            for idx, p in enumerate(pages):
+                if str(p['page_num']) == str(node.page_num).strip():
+                    target_idx = idx
+                    break
+                    
+            if target_idx != -1:
+                start_idx = max(0, target_idx - 1)
+                end_idx = min(len(pages), target_idx + 2)
+                original_content = "\n".join([f"【第{p['page_num']}页】\n{p['text']}" for p in pages[start_idx:end_idx]])
+            else:
+                original_content = ""
+
             if not original_content.strip():
                 self.logger.warning(f"    [!] 物理文本页码越界映射！系统将用自身的单段底层摘要回退覆盖其缺失。")
                 original_content = node.summary

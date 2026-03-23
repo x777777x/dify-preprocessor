@@ -60,13 +60,21 @@ def parse_markdown_outline(md_text: str) -> List[OutlineNode]:
 def get_leaf_nodes(nodes: List[OutlineNode]) -> List[OutlineNode]:
     """
     递归提取所有的底层目录（叶子节点），它是步骤2进行深层增强处理的基本单元。
+    考虑到第一步可能因为滑动窗口重叠生成重复的相同层级，此处基于 path 进行去重。
     """
     leafs = []
+    seen_paths = set()
+    
     def traverse(n: OutlineNode):
         if not n.children:
-            leafs.append(n)
-        for child in n.children:
-            traverse(child)
+            # 去除首尾不可见字符的干净路径作为唯一键
+            clean_path = n.path.strip()
+            if clean_path not in seen_paths:
+                seen_paths.add(clean_path)
+                leafs.append(n)
+        else:
+            for child in n.children:
+                traverse(child)
     
     for root in nodes:
         traverse(root)
