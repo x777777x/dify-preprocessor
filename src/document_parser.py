@@ -1,5 +1,4 @@
-import pdfplumber
-from typing import List, Dict
+from typing import List, Dict, Tuple
 
 try:
     import docx
@@ -24,20 +23,26 @@ def extract_text_with_pages(file_path: str) -> List[Dict[str, str]]:
     else:
         raise ValueError(f"暂不支持解析的文件格式后缀: {ext}")
 
-def extract_native_toc(file_path: str) -> str:
+def extract_native_toc(file_path: str) -> Tuple[str, int]:
     """
     高速第一层漏斗：尝试从文档的原生元数据（如 PDF 的 Outlines 书签，Word 的 Heading 样式）中直接秒取目录树。
+    返回: (Markdown 格式的目录树，正式正文在此次文档切片组中的起始索引)
     """
     ext = file_path.lower().split('.')[-1]
     
     if ext == 'pdf':
         if not fitz:
-            return "" # 没有安装 PyMuPDF 则放弃原生提取，降级由 LLM 处理
+            return "", 0 # 没有安装 PyMuPDF 则放弃原生提取，降级由 LLM 处理
         try:
             doc = fitz.open(file_path)
             toc = doc.get_toc() # 返回格式: [[level, title, page_num], ...]
             if not toc:
-                return ""
+                return "", 0
+            
+            # 使用提取到的最低页码书签定位作为文档内容开始的地方！
+            # page_num 是基于 1 的物理页，转换成 list index 要 -1
+            min_page = min([item[2] for item in toc]) if toc else 1
+            start_idx = max(0, int(min_page) - 1)
             
             toc_md_lines = []
             for item in toc:
@@ -46,29 +51,34 @@ def extract_native_toc(file_path: str) -> str:
                 page_num = item[2]
                 prefix = "#" * level
                 toc_md_lines.append(f"{prefix} {title}\n页码 {page_num}")
-            return "\n".join(toc_md_lines)
+            return "\n".join(toc_md_lines), start_idx
         except Exception:
-            return ""
+            return "", 0
             
     elif ext in ['doc', 'docx']:
         if not docx:
-            return ""
+            return "", 0
         try:
             doc = docx.Document(file_path)
             toc_lines = []
+            first_heading_idx = 0
+            found_first = False
             for i, p in enumerate(doc.paragraphs):
                 if p.style and p.style.name and p.style.name.startswith('Heading'):
+                    if not found_first:
+                        first_heading_idx = i // 20
+                        found_first = True
                     level_str = p.style.name.replace('Heading', '').strip()
                     level = int(level_str) if level_str.isdigit() else 1
                     prefix = "#" * level
                     # 根据前文的分块切开规则，20 段约为一页，利用虚拟分页索引赋予其页码
                     virtual_page = (i // 20) + 1
                     toc_lines.append(f"{prefix} {p.text.strip()}\n页码 {virtual_page}")
-            return "\n".join(toc_lines)
+            return "\n".join(toc_lines), first_heading_idx
         except Exception:
-            return ""
+            return "", 0
             
-    return ""
+    return "", 0
 
 def _parse_pdf(file_path: str) -> List[Dict[str, str]]:
     pages_data = []

@@ -6,6 +6,7 @@ import time
 import hashlib
 from typing import List, Dict, Tuple
 from tqdm import tqdm
+import re
 
 from .document_parser import extract_text_with_pages, extract_native_toc
 from .markdown_parser import parse_markdown_outline, get_leaf_nodes
@@ -59,7 +60,7 @@ class DifyPreProcessor:
                 f.write("时间戳,MD5前8位,原始文件名\n")
             f.write(f"{self.timestamp_str},{self.md5_str},{filename}\n")
 
-    def _extract_global_toc(self, pages: List[Dict]) -> str:
+    def _extract_global_toc(self, pages: List[Dict]) -> Tuple[str, int]:
         self.logger.info("[*] [步骤 0] 启动全局物理目录提取与规整阶段...")
         current_pages_to_check = 10
         max_pages_limit = 50
@@ -80,19 +81,19 @@ class DifyPreProcessor:
             
             if not res:
                 self.logger.error("    [x] 目录探测完全失败，回退无目录降级模式。")
-                return ""
+                return "", 0
                 
             res_stripped = res.strip()
             
             if "[NO_TOC]" in res_stripped:
                 self.logger.info("    [v] 该文档并未包含可用的物理原生目录，开启自主解析切片模式。")
-                return ""
+                return "", 0
                 
             if "[TOC_INCOMPLETE]" in res_stripped:
                 # 【方法二：页码判断法兜底】
                 if len(pages) <= current_pages_to_check:
                      self.logger.warning("    [!] 材料实际总页数已耗尽，正文未能被确认开始或探测触底，强制放弃延伸直接降级模式！")
-                     return ""
+                     return "", 0
                 
                 self.logger.info(f"    [!] 判定依据触发：正文未开始或目录末尾页码小于底线，发送 1-{current_pages_to_check + 10} 页动态扩大视野...")
                 current_pages_to_check += 10
@@ -101,28 +102,40 @@ class DifyPreProcessor:
             if "[TOC_COMPLETE]" in res_stripped:
                 self.logger.info(f"    [v] 在前 {end_idx} 页内成功抓取到全书原生目录树！正在清理标记并装载为全局真理基座。")
                 
-                # 剥离判断头部标志，提取纯粹的目录正文
+                # 剥离判断头部标志，提取纯粹的目录正文和起始页码
                 parts = res_stripped.split("[TOC_COMPLETE]")
-                extracted_toc = parts[-1].strip() if len(parts) > 1 else res_stripped
+                extracted_toc_raw = parts[-1].strip() if len(parts) > 1 else res_stripped
+                
+                start_page_idx = 0
+                match = re.search(r'^正文物理起始页\s+(\d+)\s*$', extracted_toc_raw, re.MULTILINE)
+                if match:
+                    start_page_str = match.group(1)
+                    extracted_toc = re.sub(r'^正文物理起始页\s+\d+\s*$', '', extracted_toc_raw, flags=re.MULTILINE).strip()
+                    for idx, p in enumerate(pages):
+                        if str(p['page_num']) == start_page_str:
+                            start_page_idx = idx
+                            break
+                else:
+                    extracted_toc = extracted_toc_raw.strip()
                 
                 if extracted_toc:
                     inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step0_Global_TOC.md")
                     with open(inter_file, "w", encoding="utf-8") as f:
                         f.write(extracted_toc)
-                    return extracted_toc
+                    return extracted_toc, start_page_idx
                 else:
                     self.logger.warning("    [!] 模型虽然输出了 `[TOC_COMPLETE]` 标志但未输出后面的具体目录实体，放弃提取直接降级！")
-                    return ""
+                    return "", 0
                     
             # 兼容未包含任何标志位的异常裸给目录情况
             self.logger.warning(f"    [!] 模型未严格遵循标志位要求，尝试暴力拉取当前结果直接落盘。")
             inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step0_Global_TOC.md")
             with open(inter_file, "w", encoding="utf-8") as f:
                 f.write(res_stripped)
-            return res_stripped
+            return res_stripped, 0
             
         self.logger.warning(f"    [!] 目录查找深度超过最大限制 {max_pages_limit} 页，强制终止，直接降级。")
-        return ""
+        return "", 0
 
     def run(self):
         self.logger.info(f"========== 解析任务启动 ==========")
@@ -139,7 +152,7 @@ class DifyPreProcessor:
             return
 
         self.logger.info("[*] [首层漏斗] 启动原生文档结构代码探针检测...")
-        global_toc_md = extract_native_toc(self.file_path)
+        global_toc_md, start_idx = extract_native_toc(self.file_path)
 
         if global_toc_md:
             self.logger.info("    [v] BINGO! 瞬间捕获内嵌数字书签目录树，彻底跳过大模型探测盲盒开销，直接装载为最高真理基座。")
@@ -148,7 +161,10 @@ class DifyPreProcessor:
                 f.write(global_toc_md)
         else:
             self.logger.info("    [!] 原生书签失效或文档已被物理抹平，降级启动大模型内容提取测绘漏斗...")
-            global_toc_md = self._extract_global_toc(pages)
+            global_toc_md, start_idx = self._extract_global_toc(pages)
+
+        if start_idx > 0:
+             self.logger.info(f"[*] 检测到目录长度，正文实际始于第 {start_idx + 1} 个分页块。系统将完全剔除前序 {start_idx} 个块以节省时间与 Token！")
 
         self.logger.info("[*] [步骤 1] 正在发起全局 Markdown 抽取的 Map 线程池...")
         
@@ -157,7 +173,7 @@ class DifyPreProcessor:
         outline_md_parts = []
         previous_last_node_context = None
         
-        pbar_s1 = tqdm(range(0, len(pages), step_size), desc="分块大纲提取管道", unit="区块", dynamic_ncols=True)
+        pbar_s1 = tqdm(range(start_idx, len(pages), step_size), desc="分块大纲提取管道", unit="区块", dynamic_ncols=True)
         for i in pbar_s1:
             chunk_pages = pages[i : i + chunk_size]
             if not chunk_pages:
