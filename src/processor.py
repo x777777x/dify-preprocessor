@@ -7,7 +7,7 @@ import hashlib
 from typing import List, Dict, Tuple
 from tqdm import tqdm
 
-from .document_parser import extract_text_with_pages
+from .document_parser import extract_text_with_pages, extract_native_toc
 from .markdown_parser import parse_markdown_outline, get_leaf_nodes
 from .llm_client import call_llm
 from .prompts import STEP1_SYSTEM_PROMPT, STEP2_SYSTEM_PROMPT, STEP3_SYSTEM_PROMPT, STEP4_SYSTEM_PROMPT, TOC_EXTRACT_SYSTEM_PROMPT, STEP1_WITH_TOC_SYSTEM_PROMPT
@@ -138,7 +138,17 @@ class DifyPreProcessor:
             self.logger.error(f"[x] 文档解析直接发生错误: {e}", exc_info=True)
             return
 
-        global_toc_md = self._extract_global_toc(pages)
+        self.logger.info("[*] [首层漏斗] 启动原生文档结构代码探针检测...")
+        global_toc_md = extract_native_toc(self.file_path)
+
+        if global_toc_md:
+            self.logger.info("    [v] BINGO! 瞬间捕获内嵌数字书签目录树，彻底跳过大模型探测盲盒开销，直接装载为最高真理基座。")
+            inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step0_Native_TOC.md")
+            with open(inter_file, "w", encoding="utf-8") as f:
+                f.write(global_toc_md)
+        else:
+            self.logger.info("    [!] 原生书签失效或文档已被物理抹平，降级启动大模型内容提取测绘漏斗...")
+            global_toc_md = self._extract_global_toc(pages)
 
         self.logger.info("[*] [步骤 1] 正在发起全局 Markdown 抽取的 Map 线程池...")
         

@@ -6,6 +6,11 @@ try:
 except ImportError:
     docx = None
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
 def extract_text_with_pages(file_path: str) -> List[Dict[str, str]]:
     """
     通过 pdfplumber 或 python-docx 提取文档内容并带有原始页码标记
@@ -18,6 +23,51 @@ def extract_text_with_pages(file_path: str) -> List[Dict[str, str]]:
         return _parse_docx(file_path)
     else:
         raise ValueError(f"暂不支持解析的文件格式后缀: {ext}")
+
+def extract_native_toc(file_path: str) -> str:
+    """
+    高速第一层漏斗：尝试从文档的原生元数据（如 PDF 的 Outlines 书签，Word 的 Heading 样式）中直接秒取目录树。
+    """
+    ext = file_path.lower().split('.')[-1]
+    
+    if ext == 'pdf':
+        if not fitz:
+            return "" # 没有安装 PyMuPDF 则放弃原生提取，降级由 LLM 处理
+        try:
+            doc = fitz.open(file_path)
+            toc = doc.get_toc() # 返回格式: [[level, title, page_num], ...]
+            if not toc:
+                return ""
+            
+            toc_md_lines = []
+            for item in toc:
+                level = item[0]
+                title = item[1].strip()
+                page_num = item[2]
+                prefix = "#" * level
+                toc_md_lines.append(f"{prefix} {title} (页码: {page_num})")
+            return "\n".join(toc_md_lines)
+        except Exception:
+            return ""
+            
+    elif ext in ['doc', 'docx']:
+        if not docx:
+            return ""
+        try:
+            doc = docx.Document(file_path)
+            toc_lines = []
+            for p in doc.paragraphs:
+                if p.style and p.style.name and p.style.name.startswith('Heading'):
+                    level_str = p.style.name.replace('Heading', '').strip()
+                    level = int(level_str) if level_str.isdigit() else 1
+                    prefix = "#" * level
+                    # Word 段落无法轻易挂载绝对的准确页码
+                    toc_lines.append(f"{prefix} {p.text.strip()}")
+            return "\n".join(toc_lines)
+        except Exception:
+            return ""
+            
+    return ""
 
 def _parse_pdf(file_path: str) -> List[Dict[str, str]]:
     pages_data = []
