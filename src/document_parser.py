@@ -45,7 +45,7 @@ def extract_native_toc(file_path: str) -> str:
                 title = item[1].strip()
                 page_num = item[2]
                 prefix = "#" * level
-                toc_md_lines.append(f"{prefix} {title} (页码: {page_num})")
+                toc_md_lines.append(f"{prefix} {title}\n页码 {page_num}")
             return "\n".join(toc_md_lines)
         except Exception:
             return ""
@@ -56,13 +56,14 @@ def extract_native_toc(file_path: str) -> str:
         try:
             doc = docx.Document(file_path)
             toc_lines = []
-            for p in doc.paragraphs:
+            for i, p in enumerate(doc.paragraphs):
                 if p.style and p.style.name and p.style.name.startswith('Heading'):
                     level_str = p.style.name.replace('Heading', '').strip()
                     level = int(level_str) if level_str.isdigit() else 1
                     prefix = "#" * level
-                    # Word 段落无法轻易挂载绝对的准确页码
-                    toc_lines.append(f"{prefix} {p.text.strip()}")
+                    # 根据前文的分块切开规则，20 段约为一页，利用虚拟分页索引赋予其页码
+                    virtual_page = (i // 20) + 1
+                    toc_lines.append(f"{prefix} {p.text.strip()}\n页码 {virtual_page}")
             return "\n".join(toc_lines)
         except Exception:
             return ""

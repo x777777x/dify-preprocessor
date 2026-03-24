@@ -6,10 +6,7 @@ def parse_markdown_outline(md_text: str) -> List[OutlineNode]:
     """
     使用正则表达式和AST栈结构，准确解析大模型生成的带有页码和长摘要的 Markdown 树。
     """
-    # 匹配 '# 标题 (页码: 12)' 
-    # ^(#+)\s+ 匹配Markdown级别
-    # (.*?)\s* 匹配标题内容
-    # (?:\(页码:\s*(\d+)\))? 匹配可选的数字页码
+    # 匹配 '# 标题', 去除以前行内页码的强校验
     header_pattern = re.compile(r'^(#+)\s+(.*?)(?:\s*\(页码:\s*(\d+)\))?\s*$')
     lines = md_text.split('\n')
     
@@ -47,9 +44,14 @@ def parse_markdown_outline(md_text: str) -> List[OutlineNode]:
             current_node = new_node
             current_summary_lines = []
         else:
-            # 非标题行视为摘要内容追加
+            # 非标题行可能是换行后的单独页码，或者是摘要内容
             if current_node and line.strip() != "":
-                current_summary_lines.append(line)
+                # 匹配新型的换行页码格式：^页码 10$
+                page_match = re.match(r'^页码\s*(\d+)$', line.strip())
+                if page_match and current_node.page_num == "未知":
+                    current_node.page_num = page_match.group(1)
+                else:
+                    current_summary_lines.append(line)
                 
     # 结算最后一块末尾数据
     if current_node:
