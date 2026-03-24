@@ -18,6 +18,13 @@ class OutlineNode:
         return self.title
 
     @property
+    def arrow_path(self) -> str:
+        """获取指定排版样式的安全连接符路径：一级标题 ->> 二级标题 ->> 三级标题"""
+        if self.parent:
+            return f"{self.parent.arrow_path} ->> {self.title}"
+        return self.title
+
+    @property
     def level_titles(self) -> List[str]:
         """按层级顺序获取所有父级列表(专供Excel动态展开表头)。如 [一级标题名, 二级标题名, 三级标题名]"""
         titles = []
