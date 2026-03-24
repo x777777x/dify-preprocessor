@@ -90,19 +90,32 @@ class DifyPreProcessor:
                 
             if "[TOC_INCOMPLETE]" in res_stripped:
                 # 【方法二：页码判断法兜底】
-                # 1. 如果材料的总物理页数本身就小于等于当前提取的窗口范围（比如只有8页材料，拿首轮10页），
-                #    则无需也没有后续内容可取，直接弃置探测跳出死循环。
                 if len(pages) <= current_pages_to_check:
-                     self.logger.warning("    [!] 材料实际总页数已耗尽，正文未能被确认开始，强制放弃延伸直接降级模式！")
+                     self.logger.warning("    [!] 材料实际总页数已耗尽，正文未能被确认开始或探测触底，强制放弃延伸直接降级模式！")
                      return ""
                 
-                # 2. 如果材料总页数大于当前探测窗口页数，则第二次发送1-20页（稳步扩大10页），以此类推。
-                self.logger.info(f"    [!] 【方法一：内容判断法】识别为正文未开始（目录尚未结束）！发送 1-{current_pages_to_check + 10} 页动态扩大视野...")
+                self.logger.info(f"    [!] 判定依据触发：正文未开始或目录末尾页码小于底线，发送 1-{current_pages_to_check + 10} 页动态扩大视野...")
                 current_pages_to_check += 10
                 continue
                 
-            self.logger.info(f"    [v] 在前 {end_idx} 页内成功抓取到全书原生目录树！并且正文已确认开始！正在装载为全局真理基座。")
-            
+            if "[TOC_COMPLETE]" in res_stripped:
+                self.logger.info(f"    [v] 在前 {end_idx} 页内成功抓取到全书原生目录树！正在清理标记并装载为全局真理基座。")
+                
+                # 剥离判断头部标志，提取纯粹的目录正文
+                parts = res_stripped.split("[TOC_COMPLETE]")
+                extracted_toc = parts[-1].strip() if len(parts) > 1 else res_stripped
+                
+                if extracted_toc:
+                    inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step0_Global_TOC.md")
+                    with open(inter_file, "w", encoding="utf-8") as f:
+                        f.write(extracted_toc)
+                    return extracted_toc
+                else:
+                    self.logger.warning("    [!] 模型虽然输出了 `[TOC_COMPLETE]` 标志但未输出后面的具体目录实体，放弃提取直接降级！")
+                    return ""
+                    
+            # 兼容未包含任何标志位的异常裸给目录情况
+            self.logger.warning(f"    [!] 模型未严格遵循标志位要求，尝试暴力拉取当前结果直接落盘。")
             inter_file = os.path.join(INTERMEDIATE_DIR, f"{self.run_prefix}step0_Global_TOC.md")
             with open(inter_file, "w", encoding="utf-8") as f:
                 f.write(res_stripped)
