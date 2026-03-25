@@ -53,6 +53,12 @@ def convert_word_to_excel(doc_path: str, output_excel: str):
     def flush_content():
         """将当前堆积的段落清空并并入最后锚定的路径节点中"""
         if current_content and current_path:
+            # 加入目录抛弃逻辑：如果路径本身包含标题为“目录”或“Contents”，则作为无用数据全部抛弃
+            path_str = "".join(current_path).replace(" ", "").lower()
+            if "目录" in path_str or "contents" in path_str or "tableofcontents" in path_str:
+                current_content.clear()
+                return
+                
             text = "\n".join(current_content).strip()
             if text:
                 records.append({
@@ -67,8 +73,13 @@ def convert_word_to_excel(doc_path: str, output_excel: str):
         virtual_page = (paragraph_count // 20) + 1
         
         if isinstance(block, Paragraph):
-            paragraph_count += 1
             style_name = block.style.name if block.style else ""
+            
+            # 彻底跳过自动生成的目录实体段落格式
+            if style_name.startswith('TOC') or style_name.lower().startswith('toc'):
+                continue
+                
+            paragraph_count += 1
             
             if style_name.startswith('Heading'):
                 # 遇到全新标题，立刻结算并保存之前挂载在其上方的散落正文
@@ -134,7 +145,11 @@ def convert_word_to_excel(doc_path: str, output_excel: str):
             row[col_name] = r["path"][lvl] if lvl < len(r["path"]) else ""
             
         row["页码"] = str(r["page"])
-        row["最底层标题中的内容"] = r["content"]
+        
+        # 去除正文内容中所有的空行，保证内容紧凑完整
+        clean_content = "\n".join([line for line in r["content"].splitlines() if line.strip()])
+        row["最底层标题中的内容"] = clean_content
+        
         rows.append(row)
         
     df = pd.DataFrame(rows)
