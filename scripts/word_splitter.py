@@ -16,6 +16,23 @@ def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: 
     # -------------------------------------------------------------
     # 第一步：彻底清洗和去除物理存在的文档目录（TOC）段落
     # -------------------------------------------------------------
+    # 顺便修复：初始化 doc = docx.Document(doc_path) 防止出现变量未定义
+    doc = docx.Document(doc_path)
+
+    # 1.0 先发制人：彻底清洗掉被 Word "整体内容控件(SDT)" 包裹的最顽固的自动目录块
+    sdt_deleted_count = 0
+    for sdt in doc.element.body.xpath('.//w:sdt'):
+        if (sdt.xpath('.//w:sdtPr//w:docPartGallery[@w:val="Table of Contents"]') or 
+            sdt.xpath('.//w:instrText[contains(text(), "TOC")]') or 
+            sdt.xpath('.//w:sdtPr//w:alias[contains(@w:val, "目录")]')):
+            parent = sdt.getparent()
+            if parent is not None:
+                parent.remove(sdt)
+                sdt_deleted_count += 1
+                
+    if sdt_deleted_count > 0:
+        print(f"[*] 侦测并物理清除了 {sdt_deleted_count} 个整体目录控件块(SDT容纳盒)。")
+
     toc_paragraphs = []
     in_toc_section = False
     toc_level = 1
@@ -23,8 +40,17 @@ def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: 
     for p in doc.paragraphs:
         style_name = p.style.name if p.style else ""
         
-        # 1. 直接清洗原生自带 TOC 特式的引用段落
+        # 1. 多维度特征提取：常规样式匹配 / 底层内部书签 / 隐藏的 TOC 域代码
+        is_toc_by_feature = False
         if style_name.lower().startswith('toc'):
+            is_toc_by_feature = True
+        elif p._element is not None:
+            if p._element.xpath('.//w:hyperlink[contains(@w:anchor, "_Toc")]'):
+                is_toc_by_feature = True
+            elif any(t.text and 'TOC' in t.text.upper() for t in p._element.xpath('.//w:instrText')):
+                is_toc_by_feature = True
+                
+        if is_toc_by_feature:
             toc_paragraphs.append(p)
             continue
             
