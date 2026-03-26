@@ -8,9 +8,10 @@ except ImportError:
     print("请先安装依赖: pip install python-docx")
     sys.exit(1)
 
-def split_word_by_lowest_heading(doc_path: str, output_path: str):
+def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: int = None, separator: str = "##$$##$$##$$##$$##$$##$$##"):
     print(f"[*] 正在解析目标 Word 文档: {doc_path} ...")
-    doc = docx.Document(doc_path)
+    if target_level is not None:
+        print(f"[*] 启用了强制分割层级覆盖模式，将全部对第 {target_level} 级大纲进行格式阻断。")
     
     # -------------------------------------------------------------
     # 第一步：彻底清洗和去除物理存在的文档目录（TOC）段落
@@ -73,29 +74,37 @@ def split_word_by_lowest_heading(doc_path: str, output_path: str):
             level = int(level_str) if level_str.isdigit() else 1
             headings.append((p, level))
             
-    leaf_headings = []
-    for i in range(len(headings)):
-        curr_p, curr_level = headings[i]
-        
-        # 判定算法：若紧跟着它的下一个标题并没有陷得更深 (level <= curr_level)
-        # 则说明当前标题没有任何子标题区域，也就是“最底层的大纲树标题 (叶子节点)”
-        if i + 1 < len(headings):
-            _, next_level = headings[i+1]
-            if next_level <= curr_level:
-                leaf_headings.append(curr_p)
-        else:
-            # 整本书的最后一个章节自然一定是底层叶子节点
-            leaf_headings.append(curr_p)
-            
-    if not leaf_headings:
-        print("[!] 警告：未侦测到任何规范层级段落标题（Heading 1-9），原样输出。")
+    target_headings = []
     
-    # 向筛选出来的真正底层节点头顶注入切割字符串
-    for p in leaf_headings:
+    if target_level is not None:
+        # 如果用户指派了具体大纲层级（比如 1 代表第一层级），无视父子关系纯暴力抽取该层的所有标题
+        for curr_p, curr_level in headings:
+            if curr_level == target_level:
+                target_headings.append(curr_p)
+    else:
+        # 如果未指定层级，则走智能模式：寻找所有位于树底部、往下不再产生细分标题的真实物理叶子节点
+        for i in range(len(headings)):
+            curr_p, curr_level = headings[i]
+            
+            # 判定算法：若紧跟着它的下一个标题并没有陷得更深 (level <= curr_level)
+            # 则说明当前标题没有任何子标题区域，也就是“最底层的大纲树标题 (叶子节点)”
+            if i + 1 < len(headings):
+                _, next_level = headings[i+1]
+                if next_level <= curr_level:
+                    target_headings.append(curr_p)
+            else:
+                # 整本书的最后一个章节自然一定是底层叶子节点
+                target_headings.append(curr_p)
+            
+    if not target_headings:
+        print("[!] 警告：未侦测到任何匹配的层级段落标题，原样输出。")
+    
+    # 向筛选出来的真正底层或指定节点头顶注入切割字符串
+    for p in target_headings:
         # python-docx 的注入 API 可以确保原标题段落包含样式、内嵌在表格周围的图文元素绝不发生内存上的改动，且位置极其精准
-        p.insert_paragraph_before("##$$##$$##$$##$$##$$##$$##")
+        p.insert_paragraph_before(separator)
         
-    print(f"[*] 成功识别出 {len(leaf_headings)} 个独立底层知识块，并向其头顶注入隔离阻断符。")
+    print(f"[*] 成功识别出 {len(target_headings)} 个符合条件的独立知识块结构，并向其头顶注入隔离阻断符。")
 
     # -------------------------------------------------------------
     # 第三步：极速落盘（由于是增量改动内存树，天然保留了所有的格式、原位表格与复杂图片组）
@@ -105,17 +114,22 @@ def split_word_by_lowest_heading(doc_path: str, output_path: str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="按最底层目录结构插入隔离标识符，并清除原生目录区的 Word 切割工具")
+    parser = argparse.ArgumentParser(description="按指定层级结构或最底层插入标识符，并清除原生目录区的 Word 切割排版工具")
     parser.add_argument("input", help="要处理的原始 Word 文件路径 (.docx)")
     parser.add_argument("-o", "--output", help="输出阻断重组后的 Word 文件存放路径 (可选)")
+    parser.add_argument("-l", "--level", type=int, default=None, help="覆盖智能检测：直接选择在哪一层级标题上面加特殊的间隔符（例如指定1、2或3，留空则自动算最底层）")
+    parser.add_argument("-s", "--separator", type=str, default="##$$##$$##$$##$$##$$##$$##", help="自定义要插在这里作为独立切割阻断的特殊字符串")
     
     args = parser.parse_args()
     
     input_path = args.input
     output_path = args.output
+    target_lvl = args.level
+    sep_str = args.separator
     
     if not output_path:
         base_name = os.path.splitext(input_path)[0]
-        output_path = f"{base_name}_阻断切割版.docx"
+        ext_suffix = f"_指定第{target_lvl}层_阻断版" if target_lvl else "_最底层_阻断版"
+        output_path = f"{base_name}{ext_suffix}.docx"
         
-    split_word_by_lowest_heading(input_path, output_path)
+    split_word_by_lowest_heading(input_path, output_path, target_level=target_lvl, separator=sep_str)
