@@ -20,12 +20,17 @@ def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: 
     doc = docx.Document(doc_path)
 
     # 1.0 先发制人：彻底清洗掉被 Word "整体内容控件(SDT)" 包裹的最顽固的自动目录块
-    nsmap = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+    def _safe_xpath(node, path):
+        try:
+            return node.xpath(path, namespaces={'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'})
+        except TypeError:
+            return node.xpath(path)
+
     sdt_deleted_count = 0
-    for sdt in doc.element.body.xpath('.//w:sdt', namespaces=nsmap):
-        if (sdt.xpath('.//w:sdtPr//w:docPartGallery[@w:val="Table of Contents"]', namespaces=nsmap) or 
-            sdt.xpath('.//w:instrText[contains(text(), "TOC")]', namespaces=nsmap) or 
-            sdt.xpath('.//w:sdtPr//w:alias[contains(@w:val, "目录")]', namespaces=nsmap)):
+    for sdt in doc.element.body.xpath('.//w:sdt'):
+        if (_safe_xpath(sdt, './/w:sdtPr//w:docPartGallery[@w:val="Table of Contents"]') or 
+            _safe_xpath(sdt, './/w:instrText[contains(text(), "TOC")]') or 
+            _safe_xpath(sdt, './/w:sdtPr//w:alias[contains(@w:val, "目录")]')):
             parent = sdt.getparent()
             if parent is not None:
                 parent.remove(sdt)
@@ -46,9 +51,9 @@ def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: 
         if style_name.lower().startswith('toc'):
             is_toc_by_feature = True
         elif p._element is not None:
-            if p._element.xpath('.//w:hyperlink[contains(@w:anchor, "_Toc")]', namespaces=nsmap):
+            if p._element.xpath('.//w:hyperlink[contains(@w:anchor, "_Toc")]'):
                 is_toc_by_feature = True
-            elif any(t.text and 'TOC' in t.text.upper() for t in p._element.xpath('.//w:instrText', namespaces=nsmap)):
+            elif any(t.text and 'TOC' in t.text.upper() for t in p._element.xpath('.//w:instrText')):
                 is_toc_by_feature = True
                 
         if is_toc_by_feature:
