@@ -8,7 +8,7 @@ except ImportError:
     print("请先安装依赖: pip install python-docx")
     sys.exit(1)
 
-def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: int = None, separator: str = "##$$##$$##$$##$$##$$##$$##"):
+def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: int = None, separator: str = "##$$##$$##$$##$$##$$##$$##", prepend_parent_title: bool = False):
     print(f"[*] 正在解析目标 Word 文档: {doc_path} ...")
     if target_level is not None:
         print(f"[*] 启用了强制分割层级覆盖模式，将全部对第 {target_level} 级大纲进行格式阻断。")
@@ -95,6 +95,45 @@ def split_word_by_lowest_heading(doc_path: str, output_path: str, target_level: 
     print(f"[*] 解析并成功排版清除了 {count_deleted} 条附带的独立目录格式数据块。")
 
     # -------------------------------------------------------------
+    # 第一点五步：如果启用了组合层级标题功能，遍历并重写所有标题的内容
+    # -------------------------------------------------------------
+    if prepend_parent_title:
+        import re
+        current_path_titles = {}
+        for p in doc.paragraphs:
+            style_name = p.style.name if p.style else ""
+            if style_name.startswith('Heading'):
+                level_str = style_name.replace('Heading', '').strip()
+                level = int(level_str) if level_str.isdigit() else 1
+                
+                original_text = p.text
+                if not original_text.strip():
+                    continue
+                    
+                # 去掉标题前的数字、数字和点、数字和顿号、数字和空格等（例如 1, 1.1, 1.1., 1.1、, 1.1 )
+                cleaned_title = re.sub(r'^\s*(?:\d+(?:\.\d+)*)[.\s、]*\s*', '', original_text)
+                if not cleaned_title:
+                    cleaned_title = original_text # 兜底逻辑
+                    
+                # 维护由上一级标题组成的路径
+                keys_to_remove = [k for k in current_path_titles if k >= level]
+                for k in keys_to_remove:
+                    del current_path_titles[k]
+                current_path_titles[level] = cleaned_title
+                
+                # 按层级顺序拼接成路径新标题
+                path_levels = sorted(current_path_titles.keys())
+                new_title = "-".join([current_path_titles[l] for l in path_levels])
+                
+                # 覆盖原文本，保持段落对象及原本的样式锚定引用
+                if p.runs:
+                    p.runs[0].text = new_title
+                    for run in p.runs[1:]:
+                        run.text = ''
+                else:
+                    p.add_run(new_title)
+
+    # -------------------------------------------------------------
     # 第二步：检索所有的底层叶子标题并插入特殊阻断字符串
     # -------------------------------------------------------------
     # 重新在清洗过的 DOM 中搜集所有大纲标题序列
@@ -151,6 +190,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", help="输出阻断重组后的 Word 文件存放路径 (可选)")
     parser.add_argument("-l", "--level", type=int, default=None, help="覆盖智能检测：直接选择在哪一层级标题上面加特殊的间隔符（例如指定1、2或3，留空则自动算最底层）")
     parser.add_argument("-s", "--separator", type=str, default="##$$##$$##$$##$$##$$##$$##", help="自定义要插在这里作为独立切割阻断的特殊字符串")
+    parser.add_argument("-p", "--prepend-parent", action="store_true", help="是否在子标题前加上由'-'连接的各级父标题路径，同时自动去除标题前的数字序号")
     
     args = parser.parse_args()
     
@@ -158,10 +198,11 @@ if __name__ == "__main__":
     output_path = args.output
     target_lvl = args.level
     sep_str = args.separator
+    prepend_parent = args.prepend_parent
     
     if not output_path:
         base_name = os.path.splitext(input_path)[0]
         ext_suffix = f"_指定第{target_lvl}层_阻断版" if target_lvl else "_最底层_阻断版"
         output_path = f"{base_name}{ext_suffix}.docx"
         
-    split_word_by_lowest_heading(input_path, output_path, target_level=target_lvl, separator=sep_str)
+    split_word_by_lowest_heading(input_path, output_path, target_level=target_lvl, separator=sep_str, prepend_parent_title=prepend_parent)
